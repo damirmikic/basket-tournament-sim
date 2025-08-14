@@ -116,6 +116,26 @@
             <div class="progress-bar"></div>
         </div>
 
+        <button type="button" class="collapsible">Head-to-Head Progression</button>
+        <div class="collapsible-content">
+            <div class="control-group" style="border:none; padding-top:0;">
+                <div class="grid-layout grid-cols-3">
+                    <div>
+                        <label for="h2h-team-a">Team A</label>
+                        <select id="h2h-team-a"></select>
+                    </div>
+                    <div>
+                        <label for="h2h-team-b">Team B</label>
+                        <select id="h2h-team-b"></select>
+                    </div>
+                    <div style="align-self: end;">
+                        <button type="button" id="calculateH2HBtn">Calculate</button>
+                    </div>
+                </div>
+                <div id="h2h-results" style="margin-top: 20px; text-align: center; font-size: 1.1em;"></div>
+            </div>
+        </div>
+
         <div class="tab-container">
             <div class="tab-buttons">
                 <button class="tab-button active" onclick="openTab('overall-markets')">Overall Markets</button>
@@ -144,7 +164,11 @@
               outrightOddsDataEl = document.getElementById('outrightOddsData'),
               ratingScalingFactorEl = document.getElementById('ratingScalingFactor'),
               progressBarContainer = document.querySelector('.progress-bar-container'),
-              progressBar = document.querySelector('.progress-bar');
+              progressBar = document.querySelector('.progress-bar'),
+              h2hTeamAEl = document.getElementById('h2h-team-a'),
+              h2hTeamBEl = document.getElementById('h2h-team-b'),
+              calculateH2HBtn = document.getElementById('calculateH2HBtn'),
+              h2hResultsEl = document.getElementById('h2h-results');
 
         let lastResults = null, lastTeams = [];
 
@@ -159,11 +183,14 @@
         displayModeToggle.addEventListener('change', () => displayResults(lastResults));
         teamSelectEl.addEventListener('change', () => displayResults(lastResults));
         calculateRatingsBtn.addEventListener('click', calculateRatingsFromOdds);
+        calculateH2HBtn.addEventListener('click', displayH2HResults);
 
-        document.querySelector(".collapsible").addEventListener("click", function() {
-            this.classList.toggle("active");
-            var content = this.nextElementSibling;
-            content.style.maxHeight = content.style.maxHeight ? null : content.scrollHeight + "px";
+        document.querySelectorAll(".collapsible").forEach(coll => {
+            coll.addEventListener("click", function() {
+                this.classList.toggle("active");
+                var content = this.nextElementSibling;
+                content.style.maxHeight = content.style.maxHeight ? null : content.scrollHeight + "px";
+            });
         });
         
         updateDropdowns();
@@ -195,10 +222,18 @@
             const sortedTeams = [...lastTeams].sort((a, b) => a.name.localeCompare(b.name));
             hostTeamEl.innerHTML = '<option value="none">None</option>';
             teamSelectEl.innerHTML = '<option value="">-- Select a Team --</option>';
+            h2hTeamAEl.innerHTML = '';
+            h2hTeamBEl.innerHTML = '';
             sortedTeams.forEach(team => {
-                hostTeamEl.innerHTML += `<option value="${team.name}">${team.name}</option>`;
-                teamSelectEl.innerHTML += `<option value="${team.name}">${team.name}</option>`;
+                const option = `<option value="${team.name}">${team.name}</option>`;
+                hostTeamEl.innerHTML += option;
+                teamSelectEl.innerHTML += option;
+                h2hTeamAEl.innerHTML += option;
+                h2hTeamBEl.innerHTML += option;
             });
+            if (sortedTeams.length > 1) {
+                h2hTeamBEl.value = sortedTeams[1].name;
+            }
         }
 
         function parseTeamData() {
@@ -234,7 +269,7 @@
             const bracketString = knockoutStructureEl.value;
             const ratingScalingFactor = parseFloat(ratingScalingFactorEl.value) || 30;
 
-            const results = { teams: {}, groups: {}, finalMatchups: {}, groupForecasts: {}, groupOfWinner: {}, matchups: {} };
+            const results = { teams: {}, groups: {}, finalMatchups: {}, groupForecasts: {}, groupOfWinner: {}, matchups: {}, simulationHistory: [] };
             teams.forEach(team => {
                 results.teams[team.name] = {
                     group: team.group, rating: team.rating, totalGroupWins: 0, groupPlacements: [], top2Finish: 0, top4Finish: 0,
@@ -244,7 +279,8 @@
                     groupWinsCount: {},
                     top3Finish: 0,
                     undefeatedWins: 0,
-                    metOpponent: {}
+                    metOpponent: {},
+                    eliminationStage: 0 // 0: Group, 1: R16, 2: QF, 3: SF, 4: Final, 5: Winner
                 };
             });
             for (const team of teams) {
@@ -287,8 +323,12 @@
                             res.totalGroupWins += team.wins;
                             res.groupWinsCount[team.wins] = (res.groupWinsCount[team.wins] || 0) + 1;
                             if (index < 2) res.top2Finish++;
-                            if (index < 4) res.top4Finish++;
-                            else res.eliminatedInGroup++;
+                            if (index < 4) {
+                                res.top4Finish++;
+                            } else {
+                                res.eliminatedInGroup++;
+                                res.eliminationStage = 0;
+                            }
                         });
                     }
                     
@@ -338,7 +378,9 @@
                         
                         currentRoundLosers.forEach(team => {
                             const res = results.teams[team.name];
-                            if(roundNum === 0) res.eliminatedInR16++; else if(roundNum === 1) res.eliminatedInQF++; else if(roundNum === 2) res.eliminatedInSF++;
+                            if(roundNum === 0) { res.eliminatedInR16++; res.eliminationStage = 1; }
+                            else if(roundNum === 1) { res.eliminatedInQF++; res.eliminationStage = 2; }
+                            else if(roundNum === 2) { res.eliminatedInSF++; res.eliminationStage = 3; }
                         });
 
                         if (roundNum === rounds.length - 2) { // Semi-final round
@@ -353,6 +395,7 @@
                            if(finalLoser) {
                                results.teams[finalLoser.name].runnerUp++;
                                results.teams[finalLoser.name].top3Finish++; // Runner-up is also top 3
+                               results.teams[finalLoser.name].eliminationStage = 4;
                            }
                         }
                         previousRoundWinners = currentRoundWinners;
@@ -375,7 +418,14 @@
                             const matchupKey = [winner.name, finalLoser.name].sort().join(' vs ');
                             results.finalMatchups[matchupKey] = (results.finalMatchups[matchupKey] || 0) + 1;
                         }
+                        results.teams[winner.name].eliminationStage = 5;
                     }
+
+                    const runHistory = {};
+                    for (const team of teams) {
+                        runHistory[team.name] = results.teams[team.name].eliminationStage;
+                    }
+                    results.simulationHistory.push(runHistory);
 
                     if ((i + 1) % 100 === 0) {
                         await new Promise(resolve => setTimeout(resolve, 0));
@@ -542,6 +592,47 @@
                 });
                 opponentSelect.dispatchEvent(new Event('change'));
             }
+        }
+
+        function displayH2HResults() {
+            if (!lastResults || !lastResults.simulationHistory || lastResults.simulationHistory.length === 0) {
+                h2hResultsEl.innerHTML = 'Please run a simulation first.';
+                return;
+            }
+            const teamA = h2hTeamAEl.value;
+            const teamB = h2hTeamBEl.value;
+            if (!teamA || !teamB || teamA === teamB) {
+                h2hResultsEl.innerHTML = 'Please select two different teams.';
+                return;
+            }
+
+            let teamAWins = 0;
+            let teamBWins = 0;
+            let ties = 0;
+
+            for (const run of lastResults.simulationHistory) {
+                const stageA = run[teamA];
+                const stageB = run[teamB];
+                if (stageA > stageB) {
+                    teamAWins++;
+                } else if (stageB > stageA) {
+                    teamBWins++;
+                } else {
+                    ties++;
+                }
+            }
+
+            const total = teamAWins + teamBWins + ties;
+            const probA = teamAWins / total;
+            const probB = teamBWins / total;
+            const probTie = ties / total;
+
+            let html = `
+                <p><b>${teamA} progresses further:</b> ${formatValue(probA, 0)}</p>
+                <p><b>${teamB} progresses further:</b> ${formatValue(probB, 0)}</p>
+                <p><b>Eliminated at same stage:</b> ${formatValue(probTie, 0)}</p>
+            `;
+            h2hResultsEl.innerHTML = html;
         }
         
         function openTab(tabName) {
