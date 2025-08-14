@@ -234,13 +234,17 @@
             const bracketString = knockoutStructureEl.value;
             const ratingScalingFactor = parseFloat(ratingScalingFactorEl.value) || 30;
 
-            const results = { teams: {}, groups: {}, finalMatchups: {}, groupForecasts: {} };
+            const results = { teams: {}, groups: {}, finalMatchups: {}, groupForecasts: {}, groupOfWinner: {}, matchups: {} };
             teams.forEach(team => {
-                results.teams[team.name] = { 
+                results.teams[team.name] = {
                     group: team.group, rating: team.rating, totalGroupWins: 0, groupPlacements: [], top2Finish: 0, top4Finish: 0,
                     reachesQF: 0, reachesSF: 0, reachesFinal: 0, tourneyWins: 0, runnerUp: 0,
                     eliminatedInGroup: 0, eliminatedInR16: 0, eliminatedInQF: 0, eliminatedInSF: 0,
-                    r16_opponents: {}, qf_opponents: {}, sf_opponents: {}, final_opponents: {}
+                    r16_opponents: {}, qf_opponents: {}, sf_opponents: {}, final_opponents: {},
+                    groupWinsCount: {},
+                    top3Finish: 0,
+                    undefeatedWins: 0,
+                    metOpponent: {}
                 };
             });
             for (const team of teams) {
@@ -276,11 +280,17 @@
                         }
                     }
 
-                    for (const groupName in groupStandings) groupStandings[groupName].forEach((team, index) => {
-                        const res = results.teams[team.name];
-                        res.groupPlacements[index]++; res.totalGroupWins += team.wins;
-                        if (index < 2) res.top2Finish++; if (index < 4) res.top4Finish++; else res.eliminatedInGroup++;
-                    });
+                    for (const groupName in groupStandings) {
+                        groupStandings[groupName].forEach((team, index) => {
+                            const res = results.teams[team.name];
+                            res.groupPlacements[index]++;
+                            res.totalGroupWins += team.wins;
+                            res.groupWinsCount[team.wins] = (res.groupWinsCount[team.wins] || 0) + 1;
+                            if (index < 2) res.top2Finish++;
+                            if (index < 4) res.top4Finish++;
+                            else res.eliminatedInGroup++;
+                        });
+                    }
                     
                     // Knockout Stage
                     const qualifiers = {};
@@ -315,10 +325,12 @@
 
                             const opponentMapKeys = ['r16_opponents', 'qf_opponents', 'sf_opponents', 'final_opponents'];
                             const key = opponentMapKeys[roundNum];
-                            if (key) {
-                                results.teams[teamA.name][key][teamB.name] = (results.teams[teamA.name][key][teamB.name] || 0) + 1;
-                                results.teams[teamB.name][key][teamA.name] = (results.teams[teamB.name][key][teamA.name] || 0) + 1;
-                            }
+                           if (key) {
+                               results.teams[teamA.name][key][teamB.name] = (results.teams[teamA.name][key][teamB.name] || 0) + 1;
+                               results.teams[teamB.name][key][teamA.name] = (results.teams[teamB.name][key][teamA.name] || 0) + 1;
+                           }
+                           results.teams[teamA.name].metOpponent[teamB.name] = (results.teams[teamA.name].metOpponent[teamB.name] || 0) + 1;
+                           results.teams[teamB.name].metOpponent[teamA.name] = (results.teams[teamB.name].metOpponent[teamA.name] || 0) + 1;
                             
                             const {winner, loser} = simulateMatch(teamA, teamB, hostTeam, ratingScalingFactor);
                             currentRoundWinners.push(winner); currentRoundLosers.push(loser);
@@ -329,9 +341,19 @@
                             if(roundNum === 0) res.eliminatedInR16++; else if(roundNum === 1) res.eliminatedInQF++; else if(roundNum === 2) res.eliminatedInSF++;
                         });
 
+                        if (roundNum === rounds.length - 2) { // Semi-final round
+                            if (currentRoundLosers.length >= 2) {
+                                const thirdPlaceMatch = simulateMatch(currentRoundLosers[0], currentRoundLosers[1], hostTeam, ratingScalingFactor);
+                                results.teams[thirdPlaceMatch.winner.name].top3Finish++;
+                            }
+                        }
+
                         if (roundNum === rounds.length - 1) {
                            finalLoser = currentRoundLosers[0];
-                           if(finalLoser) results.teams[finalLoser.name].runnerUp++;
+                           if(finalLoser) {
+                               results.teams[finalLoser.name].runnerUp++;
+                               results.teams[finalLoser.name].top3Finish++; // Runner-up is also top 3
+                           }
                         }
                         previousRoundWinners = currentRoundWinners;
                     }
@@ -339,6 +361,16 @@
                     if (previousRoundWinners.length === 1) {
                         const winner = previousRoundWinners[0];
                         results.teams[winner.name].tourneyWins++;
+                        results.teams[winner.name].top3Finish++; // Winner is also top 3
+                        results.groupOfWinner[winner.group] = (results.groupOfWinner[winner.group] || 0) + 1;
+
+                        const groupGames = results.groups[winner.group].numTeams - 1;
+                        const winnerGroupWins = groupStandings[winner.group].find(t => t.name === winner.name).wins;
+                        
+                        if (winnerGroupWins === groupGames) {
+                            results.teams[winner.name].undefeatedWins++;
+                        }
+
                         if(finalLoser) {
                             const matchupKey = [winner.name, finalLoser.name].sort().join(' vs ');
                             results.finalMatchups[matchupKey] = (results.finalMatchups[matchupKey] || 0) + 1;
@@ -420,6 +452,12 @@
             const finalMatchups = Object.entries(results.finalMatchups).sort(([, a], [, b]) => b - a).slice(0, 20);
             finalMatchups.forEach(([pair, count]) => { html += `<tr><td>${pair}</td><td>${formatValue(count / numSimulations, tourneyMargin)}</td></tr>`; });
             html += '</tbody></table>';
+
+            html += `<h3>Group of Tournament Winner</h3><table><thead><tr><th>Group</th><th>Chance</th></tr></thead><tbody>`;
+            const groupOfWinner = Object.entries(results.groupOfWinner).sort(([, a], [, b]) => b - a);
+            groupOfWinner.forEach(([group, count]) => { html += `<tr><td>Group ${group}</td><td>${formatValue(count / numSimulations, tourneyMargin)}</td></tr>`; });
+            html += '</tbody></table>';
+
             overallMarketsEl.innerHTML = html;
         }
         
@@ -437,11 +475,21 @@
             html += `<tr><td>Avg Wins in Group</td><td>${(d.totalGroupWins/numSimulations).toFixed(2)}</td></tr>`;
             html += `<tr><td>Finish in Top 2</td><td>${formatValue(d.top2Finish/numSimulations, groupMargin)}</td></tr>`;
             html += `<tr><td>Qualify from Group (Top 4)</td><td>${formatValue(d.top4Finish/numSimulations, groupMargin)}</td></tr>`;
-            html += '</table></div><div><h4>Tournament Markets</h4><table>';
+            html += '</table>';
+
+            const groupTeamCount = lastTeams.filter(t => t.group === d.group).length;
+            html += `<h4>Exact Group Wins</h4><table><thead><tr><th>Wins</th><th>Chance</th></tr></thead><tbody>`;
+            for (let i = 0; i < groupTeamCount; i++) {
+                const count = d.groupWinsCount[i] || 0;
+                html += `<tr><td>${i}</td><td>${formatValue(count/numSimulations, groupMargin)}</td></tr>`;
+            }
+            html += `</tbody></table></div><div><h4>Tournament Markets</h4><table>`;
+            html += `<tr><td>Win a Medal (Top 3)</td><td>${formatValue(d.top3Finish/numSimulations, tourneyMargin)}</td></tr>`;
             html += `<tr><td>Reach Quarter-Final</td><td>${formatValue(d.reachesQF/numSimulations, tourneyMargin)}</td></tr>`;
             html += `<tr><td>Reach Semi-Final</td><td>${formatValue(d.reachesSF/numSimulations, tourneyMargin)}</td></tr>`;
             html += `<tr><td>Reach Final</td><td>${formatValue(d.reachesFinal/numSimulations, tourneyMargin)}</td></tr>`;
             html += `<tr><td>Win Tournament</td><td>${formatValue(d.tourneyWins/numSimulations, tourneyMargin)}</td></tr>`;
+            html += `<tr><td>Win Undefeated</td><td>${formatValue(d.undefeatedWins/numSimulations, tourneyMargin)}</td></tr>`;
             html += '</table></div><div><h4>Stage of Elimination</h4><table>';
             html += `<tr><td>Eliminated in Group Stage</td><td>${formatValue(d.eliminatedInGroup/numSimulations, tourneyMargin)}</td></tr>`;
             html += `<tr><td>Eliminated in Round of 16</td><td>${formatValue(d.eliminatedInR16/numSimulations, tourneyMargin)}</td></tr>`;
@@ -474,7 +522,26 @@
                 html += `</tbody></table></div>`;
             }
             html += `</div>`;
+
+            html += `<h4>Tournament Matchup Probability</h4>`;
+            html += `<label for="opponent-select">Select Opponent:</label><select id="opponent-select">`;
+            const otherTeams = lastTeams.filter(t => t.name !== selectedTeam).sort((a, b) => a.name.localeCompare(b.name));
+            otherTeams.forEach(opponent => {
+                html += `<option value="${opponent.name}">${opponent.name}</option>`;
+            });
+            html += `</select><div id="matchup-prob-result" style="margin-top:10px;"></div>`;
+
             teamSpecificResultsEl.innerHTML = html;
+
+            const opponentSelect = document.getElementById('opponent-select');
+            if(opponentSelect) {
+                opponentSelect.addEventListener('change', () => {
+                    const selectedOpponent = opponentSelect.value;
+                    const meetingProb = (d.metOpponent[selectedOpponent] || 0) / numSimulations;
+                    document.getElementById('matchup-prob-result').innerHTML = `Chance to meet ${selectedOpponent} at any stage: <b>${formatValue(meetingProb, tourneyMargin)}</b>`;
+                });
+                opponentSelect.dispatchEvent(new Event('change'));
+            }
         }
         
         function openTab(tabName) {
